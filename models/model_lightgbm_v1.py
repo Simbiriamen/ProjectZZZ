@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-model_lightgbm_v1.py v2.0
+model_lightgbm_v1.py v2.1
 🔧 АДАПТАЦИЯ ПОД BACKTEST_RESULTS:
   1. Данные загружаются из готовой таблицы backtest_results (мгновенно).
   2. Признаки (features) подтягиваются через JOIN с sales_enriched.
   3. Сохранена логика кодирования, обучения и калибровки.
+  4. 🔧 v2.1: Добавлена валидация входных данных (даты, выбросы, диапазоны)
 
 БАЗОВАЯ МОДЕЛЬ: LightGBM Binary Classification
 Задача: Предсказать вероятность покупки SKU в окне 14 дней после визита
@@ -46,6 +47,267 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+# ==============================================================================
+# ВАЛИДАЦИЯ ДАННЫХ
+# ==============================================================================
+
+def validate_date_format(df: pd.DataFrame, date_columns: list = None) -> dict:
+    """
+    🔧 Проверка формата дат
+    
+    Args:
+        df: DataFrame для проверки
+        date_columns: Список колонок с датами (по умолчанию: ['purchase_date', 'visit_date'])
+    
+    Returns:
+        dict со статистикой валидации
+    """
+    if date_columns is None:
+        date_columns = ['purchase_date', 'visit_date', 'last_purchase_date']
+    
+    result = {
+        'valid': True,
+        'errors': [],
+        'warnings': [],
+        'stats': {}
+    }
+    
+    for col in date_columns:
+        if col not in df.columns:
+            continue
+        
+        # Проверка типа данных
+        if not pd.api.types.is_datetime64_any_dtype(df[col]):
+            result['warnings'].append(f"Колонка {col} не имеет datetime типа")
+            # Пробуем конвертировать
+            try:
+                df[col] = pd.to_datetime(df[col], errors='coerce')
+                result['warnings'].append(f"  → {col} сконвертирована в datetime")
+            except Exception as e:
+                result['errors'].append(f"Не удалось конвертировать {col} в datetime: {e}")
+                result['valid'] = False
+        
+        # Проверка на NaT
+        nat_count = df[col].isna().sum()
+        nat_pct = nat_count / len(df) * 100 if len(df) > 0 else 0
+        
+        result['stats'][col] = {
+            'nat_count': nat_count,
+            'nat_pct': round(nat_pct, 2),
+            'min_date': str(df[col].min()) if not pd.isna(df[col].min()) else None,
+            'max_date': str(df[col].max()) if not pd.isna(df[col].max()) else None
+        }
+        
+        # Предупреждение если много NaT
+        if nat_pct > 5:
+            result['warnings'].append(f"{col}: {nat_pct:.1f}% NaT значений")
+        
+        # Проверка на будущие даты
+        future_dates = (df[col] > pd.Timestamp.now()).sum()
+        if future_dates > 0:
+            result['warnings'].append(f"{col}: найдено {future_dates} будущих дат")
+    
+    return result
+
+
+def filter_outliers_iqr(df: pd.DataFrame, numeric_columns: list = None, 
+                        iqr_multiplier: float = 3.0) -> tuple:
+    """
+    🔧 Фильтрация выбросов методом IQR
+    
+    Args:
+        df: DataFrame для фильтрации
+        numeric_columns: Список числовых колонок (по умолчанию: все числовые)
+        iqr_multiplier: Множитель для IQR (по умолчанию: 3.0)
+    
+    Returns:
+        (df_filtered, outliers_info)
+    """
+    if numeric_columns is None:
+        numeric_columns = df.select_dtypes(include=[np.number]).columns.tolist()
+    
+    outliers_info = {}
+    mask = pd.Series(True, index=df.index)
+    
+    for col in numeric_columns:
+        if col not in df.columns:
+            continue
+        
+        Q1 = df[col].quantile(0.25)
+        Q3 = df[col].quantile(0.75)
+        IQR = Q3 - Q1
+        
+        lower_bound = Q1 - iqr_multiplier * IQR
+        upper_bound = Q3 + iqr_multiplier * IQR
+        
+        # Считаем выбросы
+        col_outliers = ((df[col] < lower_bound) | (df[col] > upper_bound)).sum()
+        
+        if col_outliers > 0:
+            outliers_info[col] = {
+                'count': int(col_outliers),
+                'pct': round(col_outliers / len(df) * 100, 2),
+                'lower_bound': round(lower_bound, 4),
+                'upper_bound': round(upper_bound, 4),
+                'min': round(df[col].min(), 4),
+                'max': round(df[col].max(), 4)
+            }
+            
+            # Применяем фильтр
+            col_mask = (df[col] >= lower_bound) & (df[col] <= upper_bound)
+            mask = mask & col_mask
+    
+    df_filtered = df[mask].reset_index(drop=True)
+    
+    return df_filtered, outliers_info
+
+
+def validate_feature_ranges(df: pd.DataFrame, feature_ranges: dict = None) -> dict:
+    """
+    🔧 Валидация диапазонов значений признаков
+    
+    Args:
+        df: DataFrame для проверки
+        feature_ranges: Словарь {column: (min, max)}
+    
+    Returns:
+        dict с результатами валидации
+    """
+    if feature_ranges is None:
+        # 🔧 Стандартные диапазоны для признаков ProjectZZZ
+        feature_ranges = {
+            'frequency_30d': (0, 100),      # Частота покупок за 30 дней
+            'frequency_90d': (0, 300),      # Частота покупок за 90 дней
+            'days_since_last_purchase': (0, 3650),  # Дней с последней покупки (до 10 лет)
+            'rolling_sales_2w': (0, 10000), # Продажи за 2 недели
+            'rolling_sales_4w': (0, 20000), # Продажи за 4 недели
+            'rolling_sales_8w': (0, 40000), # Продажи за 8 недель
+            'group_trend_6m': (-1.0, 1.0),  # Тренд группы (-100% до +100%)
+            'group_share_in_portfolio': (0, 1),  # Доля в портфеле (0-100%)
+            'days_since_last_purchase_group': (0, 3650),
+            'margin': (-1, 1),              # Маржа (-100% до +100%)
+            'stock': (0, 100000),           # Остаток на складе
+            'price': (0, 1000000),          # Цена
+            'predicted_prob': (0, 1),       # Вероятность (0-1)
+            'target': (0, 1)                # Целевая переменная (0 или 1)
+        }
+    
+    result = {
+        'valid': True,
+        'errors': [],
+        'warnings': [],
+        'out_of_range': {}
+    }
+    
+    for col, (min_val, max_val) in feature_ranges.items():
+        if col not in df.columns:
+            continue
+        
+        # Проверка на значения вне диапазона
+        out_of_range = ((df[col] < min_val) | (df[col] > max_val)).sum()
+        
+        if out_of_range > 0:
+            out_of_range_pct = out_of_range / len(df) * 100 if len(df) > 0 else 0
+            
+            result['out_of_range'][col] = {
+                'count': int(out_of_range),
+                'pct': round(out_of_range_pct, 2),
+                'expected_range': (min_val, max_val),
+                'actual_min': round(df[col].min(), 4),
+                'actual_max': round(df[col].max(), 4)
+            }
+            
+            # Критично если > 5% вне диапазона
+            if out_of_range_pct > 5:
+                result['errors'].append(
+                    f"{col}: {out_of_range_pct:.1f}% значений вне диапазона [{min_val}, {max_val}]"
+                )
+                result['valid'] = False
+            else:
+                result['warnings'].append(
+                    f"{col}: {out_of_range_pct:.1f}% вне диапазона [{min_val}, {max_val}]"
+                )
+    
+    return result
+
+
+def validate_training_data(X_train: pd.DataFrame, y_train: pd.Series,
+                           X_test: pd.DataFrame, y_test: pd.Series) -> dict:
+    """
+    🔧 Комплексная валидация данных для обучения
+    
+    Args:
+        X_train, y_train: Обучающая выборка
+        X_test, y_test: Тестовая выборка
+    
+    Returns:
+        dict с результатами валидации
+    """
+    result = {
+        'valid': True,
+        'errors': [],
+        'warnings': [],
+        'stats': {}
+    }
+    
+    # 1. Проверка на пустые данные
+    if len(X_train) == 0:
+        result['errors'].append("X_train пустой")
+        result['valid'] = False
+    
+    if len(X_test) == 0:
+        result['errors'].append("X_test пустой")
+        result['valid'] = False
+    
+    # 2. Проверка на NaN в признаках
+    train_nan = X_train.isna().sum().sum()
+    test_nan = X_test.isna().sum().sum()
+    
+    if train_nan > 0:
+        result['warnings'].append(f"X_train: {train_nan} NaN значений")
+    if test_nan > 0:
+        result['warnings'].append(f"X_test: {test_nan} NaN значений")
+    
+    # 3. Проверка целевой переменной
+    for name, y in [('y_train', y_train), ('y_test', y_test)]:
+        if y.isna().sum() > 0:
+            result['errors'].append(f"{name}: {y.isna().sum()} NaN в target")
+            result['valid'] = False
+        
+        unique_vals = y.unique()
+        if not all(v in [0, 1] for v in unique_vals):
+            result['warnings'].append(f"{name}: target содержит не только 0/1")
+    
+    # 4. Проверка дисбаланса классов
+    for name, y in [('y_train', y_train), ('y_test', y_test)]:
+        pos_ratio = y.sum() / len(y) * 100 if len(y) > 0 else 0
+        result['stats'][f'{name}_positive_ratio'] = round(pos_ratio, 2)
+        
+        if pos_ratio < 1:
+            result['warnings'].append(f"{name}: дисбаланс классов ({pos_ratio:.1f}% положительных)")
+        elif pos_ratio > 50:
+            result['warnings'].append(f"{name}: необычный баланс ({pos_ratio:.1f}% положительных)")
+    
+    # 5. Проверка размерности
+    if X_train.shape[1] != X_test.shape[1]:
+        result['errors'].append(
+            f"Разная размерность X_train ({X_train.shape[1]}) и X_test ({X_test.shape[1]})"
+        )
+        result['valid'] = False
+    
+    # 6. Проверка на дубликаты
+    train_dups = X_train.duplicated().sum()
+    test_dups = X_test.duplicated().sum()
+    
+    result['stats']['train_duplicates'] = int(train_dups)
+    result['stats']['test_duplicates'] = int(test_dups)
+    
+    if train_dups > len(X_train) * 0.1:
+        result['warnings'].append(f"X_train: {train_dups} дубликатов ({train_dups/len(X_train)*100:.1f}%)")
+    
+    return result
+
 
 # ==============================================================================
 # ФУНКЦИИ
@@ -156,15 +418,92 @@ def prepare_features(df, encoded_cols):
     
     return X, y, feature_cols
 
-def train_model(X_train, y_train, X_test, y_test, feature_names):
-    """Обучение LightGBM с ранней остановкой"""
+def train_model(X_train, y_train, X_test, y_test, feature_names, 
+                validate=True, filter_outliers=False, iqr_multiplier=3.0):
+    """
+    Обучение LightGBM с ранней остановкой
+    
+    Args:
+        X_train, y_train: Обучающая выборка
+        X_test, y_test: Тестовая выборка
+        feature_names: Список имён признаков
+        validate: 🔧 Выполнять валидацию данных (по умолчанию True)
+        filter_outliers: 🔧 Фильтровать выбросы (по умолчанию False)
+        iqr_multiplier: 🔧 Множитель IQR для фильтрации выбросов
+    
+    Returns:
+        model, calibrator, num_trees
+    """
     logger.info("\n🧠 Обучение модели LightGBM...")
     
+    # 🔧 ВАЛИДАЦИЯ ВХОДНЫХ ДАННЫХ
+    if validate:
+        logger.info("\n🔍 Валидация данных для обучения...")
+        
+        validation_result = validate_training_data(X_train, y_train, X_test, y_test)
+        
+        # Логирование результатов
+        for warning in validation_result['warnings']:
+            logger.warning(f"   ⚠️ {warning}")
+        
+        for error in validation_result['errors']:
+            logger.error(f"   ❌ {error}")
+        
+        # Логирование статистики
+        for stat_name, value in validation_result['stats'].items():
+            logger.info(f"   📊 {stat_name}: {value}")
+        
+        # 🔧 Блокировка обучения при критических ошибках
+        if not validation_result['valid']:
+            raise ValueError(f"Валидация не пройдена: {'; '.join(validation_result['errors'])}")
+        
+        logger.info("   ✅ Валидация пройдена")
+    
+    # 🔧 ФИЛЬТРАЦИЯ ВЫБРОСОВ (опционально)
+    if filter_outliers:
+        logger.info(f"\n🗑️ Фильтрация выбросов (IQR множитель={iqr_multiplier})...")
+        
+        # Объединяем X_train и X_test для фильтрации
+        X_combined = pd.concat([X_train, X_test], axis=0, ignore_index=True)
+        y_combined = pd.concat([y_train, y_test], axis=0, ignore_index=True)
+        
+        X_filtered, outliers_info = filter_outliers_iqr(
+            X_combined, 
+            numeric_columns=feature_names,
+            iqr_multiplier=iqr_multiplier
+        )
+        
+        # Логирование результатов фильтрации
+        for col, info in outliers_info.items():
+            logger.info(f"   📊 {col}: удалено {info['count']} выбросов ({info['pct']:.1f}%)")
+        
+        # Разделяем обратно
+        split_idx = len(X_train)
+        X_train = X_filtered[:split_idx].reset_index(drop=True)
+        X_test = X_filtered[split_idx:].reset_index(drop=True)
+        y_train = y_combined[:split_idx].reset_index(drop=True)
+        y_test = y_combined[split_idx:].reset_index(drop=True)
+        
+        logger.info(f"   ✅ Осталось строк: train={len(X_train)}, test={len(X_test)}")
+    
+    # Проверка размера данных после валидации и фильтрации
+    if len(X_train) < 100:
+        raise ValueError(f"Недостаточно данных для обучения после валидации: {len(X_train)} строк")
+    
+    if len(X_test) < 10:
+        raise ValueError(f"Недостаточно данных для тестирования: {len(X_test)} строк")
+
+    # Расчёт дисбаланса классов
     neg_count = (y_train == 0).sum()
     pos_count = (y_train == 1).sum()
+    
+    if pos_count == 0:
+        raise ValueError("Нет положительных примеров (target=1) в обучающей выборке")
+    
     scale_pos_weight = neg_count / pos_count
     logger.info(f"   🔧 scale_pos_weight: {scale_pos_weight:.2f}")
-    
+    logger.info(f"   📊 Баланс классов: {neg_count}:{pos_count} ({pos_count/len(y_train)*100:.1f}% positive)")
+
     lgb_params = {
         'objective': 'binary',
         'metric': ['binary_logloss', 'auc'],
@@ -180,10 +519,10 @@ def train_model(X_train, y_train, X_test, y_test, feature_names):
         'seed': 42,
         'scale_pos_weight': scale_pos_weight
     }
-    
+
     train_data = lgb.Dataset(X_train, label=y_train, feature_name=feature_names)
     test_data = lgb.Dataset(X_test, label=y_test, feature_name=feature_names, reference=train_data)
-    
+
     logger.info("   📈 Обучение модели (с ранней остановкой)...")
     model = lgb.train(
         lgb_params,
@@ -192,23 +531,24 @@ def train_model(X_train, y_train, X_test, y_test, feature_names):
         valid_sets=[test_data],
         callbacks=[lgb.log_evaluation(period=200)]
     )
-    
+
     logger.info(f"   ✅ Модель обучена (итераций: {model.num_trees()})")
-    
+
     # Важность признаков
     logger.info("\n📊 Важность признаков (топ-10):")
     importance = model.feature_importance(importance_type='gain')
     feature_importance = sorted(zip(feature_names, importance), key=lambda x: x[1], reverse=True)
     for i, (feat, imp) in enumerate(feature_importance[:10]):
         logger.info(f"   {i+1}. {feat}: {imp:,.2f}")
-        
+
     # Калибровка
     logger.info("\n   📈 Калибровка вероятностей (LogisticRegression)...")
     y_proba_raw = model.predict(X_test, num_iteration=model.num_trees())
     calibrator = LogisticRegression(solver='lbfgs', max_iter=1000)
     calibrator.fit(y_proba_raw.reshape(-1, 1), y_test)
-    
+
     return model, calibrator, model.num_trees()
+
 
 def evaluate_model(model, calibrator, X_test, y_test, best_iteration):
     """Оценка качества модели"""
@@ -324,38 +664,70 @@ def update_registry(metrics, model_path, calib_path):
 # ==============================================================================
 def main():
     logger.info("="*70)
-    logger.info("🧠 ProjectZZZ - ОБУЧЕНИЕ МОДЕЛИ LightGBM v1.0 (DB Source)")
+    logger.info("🧠 ProjectZZZ - ОБУЧЕНИЕ МОДЕЛИ LightGBM v2.1 (С ВАЛИДАЦИЕЙ)")
     logger.info(f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info("="*70)
-    
+
     start_time = time.time()
     engine = None
     
+    # 🔧 НАСТРОЙКИ ВАЛИДАЦИИ
+    ENABLE_VALIDATION = True      # Валидация входных данных
+    ENABLE_OUTLIER_FILTER = False # Фильтрация выбросов (опционально)
+    IQR_MULTIPLIER = 3.0          # Множитель для IQR фильтра
+
     try:
         config = load_config()
         engine = get_engine(config)
-        
+
         # 1. Загрузка
         df = load_training_data(engine, limit=None) # limit=None для полного датасета
         
+        # 🔧 Валидация данных после загрузки
+        if ENABLE_VALIDATION:
+            logger.info("\n🔍 Валидация загруженных данных...")
+            date_validation = validate_date_format(df, ['last_purchase_date'])
+            
+            for warning in date_validation['warnings']:
+                logger.warning(f"   ⚠️ {warning}")
+            for stat_name, value in date_validation['stats'].items():
+                logger.info(f"   📊 {stat_name}: {value}")
+            
+            # Валидация диапазонов
+            range_validation = validate_feature_ranges(df)
+            for warning in range_validation['warnings']:
+                logger.warning(f"   ⚠️ {warning}")
+            for error in range_validation['errors']:
+                logger.error(f"   ❌ {error}")
+                
+                # 🔧 Блокировка при критических ошибках
+                if not range_validation['valid']:
+                    raise ValueError(f"Валидация диапазонов не пройдена: {'; '.join(range_validation['errors'])}")
+
         if len(df) < 10000:
             logger.error("❌ Недостаточно данных для обучения!")
             return 1
-            
+
         # 2. Кодирование
         cat_cols = ['marketing_group', 'brand', 'category']
         df, encoded_cols, encoders = encode_categorical(df, cat_cols)
-        
+
         # 3. Признаки
         X, y, feature_cols = prepare_features(df, encoded_cols)
-        
+
         # 4. Split
         X_train, X_test, y_train, y_test = train_test_split(
             X, y, test_size=0.2, random_state=42, stratify=y
         )
-        
-        # 5. Train
-        model, calibrator, best_iter = train_model(X_train, y_train, X_test, y_test, feature_cols)
+
+        # 5. Train с валидацией
+        logger.info("\n📚 Запуск обучения с валидацией...")
+        model, calibrator, best_iter = train_model(
+            X_train, y_train, X_test, y_test, feature_cols,
+            validate=ENABLE_VALIDATION,
+            filter_outliers=ENABLE_OUTLIER_FILTER,
+            iqr_multiplier=IQR_MULTIPLIER
+        )
         
         # 6. Evaluate
         metrics = evaluate_model(model, calibrator, X_test, y_test, best_iter)
