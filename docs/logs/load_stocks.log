@@ -1,0 +1,10 @@
+2026-03-26 23:11:18,798 [INFO] Подключение к БД: project_zzz_db
+2026-03-26 23:11:18,799 [INFO] Файл остатков: Остатки 03 26.xlsx
+2026-03-26 23:11:36,426 [INFO] SKU с остатками: 33,203
+2026-03-26 23:11:36,426 [INFO] Всего остатков (сумма): 105,335
+2026-03-26 23:11:40,500 [ERROR] Ошибка загрузки остатков: (psycopg2.OperationalError) connection to server at "localhost" (::1), port 5432 failed: Connection refused (0x0000274D/10061)
+	Is the server running on that host and accepting TCP/IP connections?
+connection to server at "localhost" (127.0.0.1), port 5432 failed: Connection refused (0x0000274D/10061)
+	Is the server running on that host and accepting TCP/IP connections?
+
+(Background on this error at: https://sqlalche.me/e/20/e3q8)

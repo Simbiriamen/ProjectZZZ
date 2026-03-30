@@ -1,0 +1,29 @@
+{
+  "active_model": "model_lightgbm_v1",
+  "models": [
+    {
+      "name": "model_lightgbm_v1",
+      "status": "production",
+      "metrics": {
+        "precision_5": 0.42,
+        "hit_rate": 0.68,
+        "brier_score": 0.15,
+        "training_time_hours": 2.0
+      },
+      "activated_date": null,
+      "auto_promote": true
+    },
+    {
+      "name": "model_lightgbm_v2",
+      "status": "staging",
+      "metrics": {
+        "precision_5": 0.45,
+        "hit_rate": 0.71,
+        "brier_score": 0.13,
+        "training_time_hours": 2.5
+      },
+      "activated_date": null,
+      "auto_promote": true
+    }
+  ]
+}

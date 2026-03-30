@@ -1,0 +1,30 @@
+{
+  "version": "lightgbm_v1.2",
+  "trained_at": "20260321_221154",
+  "metrics": {
+    "brier_score": 0.08280692488754224,
+    "precision": 0.7564276048714479,
+    "hit_rate": 0.218359375,
+    "auc": 0.848087818950688,
+    "all_passed": false
+  },
+  "feature_cols": [
+    "frequency_30d",
+    "frequency_90d",
+    "days_since_last_purchase",
+    "rolling_sales_2w",
+    "rolling_sales_4w",
+    "rolling_sales_8w",
+    "group_trend_6m",
+    "group_share_in_portfolio",
+    "days_since_last_purchase_group",
+    "margin",
+    "stock",
+    "price",
+    "marketing_group_encoded",
+    "brand_encoded",
+    "category_encoded"
+  ],
+  "best_iteration": 500,
+  "note": "Используются нативные вероятности LightGBM (без CalibratedClassifierCV)"
+}

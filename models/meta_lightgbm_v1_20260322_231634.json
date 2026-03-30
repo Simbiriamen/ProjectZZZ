@@ -1,0 +1,31 @@
+{
+  "version": "lightgbm_v1.4",
+  "trained_at": "20260322_231634",
+  "metrics": {
+    "brier_score": 0.10164044740002802,
+    "precision": 0.35361122164743336,
+    "hit_rate": 0.5988543509392638,
+    "auc": 0.7914038636988299,
+    "threshold": 0.19,
+    "all_passed": true
+  },
+  "feature_cols": [
+    "frequency_30d",
+    "frequency_90d",
+    "days_since_last_purchase",
+    "rolling_sales_2w",
+    "rolling_sales_4w",
+    "rolling_sales_8w",
+    "group_trend_6m",
+    "group_share_in_portfolio",
+    "days_since_last_purchase_group",
+    "margin",
+    "stock",
+    "price",
+    "marketing_group_encoded",
+    "brand_encoded",
+    "category_encoded"
+  ],
+  "best_iteration": 1000,
+  "note": "scale_pos_weight + автопорог + калибровка LogisticRegression + БЕЗ early_stopping"
+}
