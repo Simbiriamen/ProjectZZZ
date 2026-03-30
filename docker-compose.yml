@@ -1,0 +1,183 @@
+# =============================================================================
+# ProjectZZZ Docker Compose
+# =============================================================================
+# Полная среда для запуска системы рекомендаций
+# =============================================================================
+
+version: '3.8'
+
+services:
+  # ---------------------------------------------------------------------------
+  # POSTGRESQL DATABASE
+  # ---------------------------------------------------------------------------
+  db:
+    image: postgres:14-alpine
+    container_name: projectzzz-db
+    restart: unless-stopped
+    
+    environment:
+      POSTGRES_DB: ${DB_NAME:-project_zzz_db}
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    
+    networks:
+      - projectzzz-network
+
+  # ---------------------------------------------------------------------------
+  # RECOMMENDATION SERVICE
+  # ---------------------------------------------------------------------------
+  recommendations:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: projectzzz-recommendations
+    restart: unless-stopped
+    
+    depends_on:
+      db:
+        condition: service_healthy
+    
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME:-project_zzz_db}
+      DB_USER: ${DB_USER:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD}
+      
+      PYTHONUNBUFFERED: 1
+      LOG_LEVEL: INFO
+    
+    volumes:
+      - ./data/output:/app/data/output
+      - ./data/cache:/app/data/cache
+      - ./docs/logs:/app/docs/logs
+    
+    command: ["src/generate_recommendations.py"]
+    
+    networks:
+      - projectzzz-network
+
+  # ---------------------------------------------------------------------------
+  # MODEL TRAINING SERVICE
+  # ---------------------------------------------------------------------------
+  training:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: projectzzz-training
+    restart: "no"
+    
+    depends_on:
+      db:
+        condition: service_healthy
+    
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME:-project_zzz_db}
+      DB_USER: ${DB_USER:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD}
+      
+      ENABLE_VALIDATION: "true"
+      ENABLE_OUTLIER_FILTER: "false"
+    
+    volumes:
+      - ./models:/app/models
+      - ./data/processed:/app/data/processed
+      - ./docs/logs:/app/docs/logs
+    
+    command: ["models/model_lightgbm_v1.py"]
+    
+    networks:
+      - projectzzz-network
+    profiles:
+      - training
+
+  # ---------------------------------------------------------------------------
+  # BACKTESTING SERVICE
+  # ---------------------------------------------------------------------------
+  backtest:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: projectzzz-backtest
+    restart: "no"
+    
+    depends_on:
+      db:
+        condition: service_healthy
+    
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME:-project_zzz_db}
+      DB_USER: ${DB_USER:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD}
+    
+    volumes:
+      - ./docs/logs:/app/docs/logs
+    
+    command: ["src/backtest_engine.py"]
+    
+    networks:
+      - projectzzz-network
+    profiles:
+      - training
+
+  # ---------------------------------------------------------------------------
+  # PGADMIN (OPTIONAL)
+  # ---------------------------------------------------------------------------
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: projectzzz-pgadmin
+    restart: unless-stopped
+    
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@example.com}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-admin}
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+    
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    
+    ports:
+      - "${PGADMIN_PORT:-8080}:80"
+    
+    depends_on:
+      db:
+        condition: service_healthy
+    
+    networks:
+      - projectzzz-network
+    profiles:
+      - dev
+
+# =============================================================================
+# VOLUMES
+# =============================================================================
+volumes:
+  postgres_data:
+    driver: local
+  pgadmin_data:
+    driver: local
+
+# =============================================================================
+# NETWORKS
+# =============================================================================
+networks:
+  projectzzz-network:
+    driver: bridge

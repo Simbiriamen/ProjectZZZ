@@ -1,0 +1,70 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Qwen
+.qwen/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+.venv
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Project specific
+data/raw/*.xlsx
+data/processed/*.csv
+data/processed/*.parquet
+data/output/*.xlsx
+docs/logs/*.log
+models/*.pkl
+!models/model_controller.py
+!models/model_lightgbm_v1.py
+
+# Tests
+tests/
+pytest.ini
+
+# Documentation
+docs/coverage/
+*.md
+!README.md
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Docker
+Dockerfile
+docker-compose*.yml
+.docker/
+
+# CI/CD
+.github/
+
+# Misc
+*.log
+*.tmp
+.DS_Store
+Thumbs.db

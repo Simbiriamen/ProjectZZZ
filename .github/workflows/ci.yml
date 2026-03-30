@@ -1,0 +1,246 @@
+# =============================================================================
+# PROJECTZZZ CI/CD PIPELINE
+# =============================================================================
+# Тестирование, линтинг, сборка Docker при push и pull request
+# =============================================================================
+
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+    inputs:
+      run_tests:
+        description: 'Run tests'
+        required: true
+        default: 'true'
+      build_docker:
+        description: 'Build Docker image'
+        required: true
+        default: 'false'
+
+env:
+  PYTHON_VERSION: '3.10'
+  POSTGRES_VERSION: '14'
+  PIP_CACHE_DIR: ~/.cache/pip
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # LINT & TYPE CHECK
+  # ---------------------------------------------------------------------------
+  lint:
+    name: 🔍 Lint & Type Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+      
+      - name: 🐍 Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+      
+      - name: 📦 Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install flake8 mypy pylint
+          
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          fi
+      
+      - name: 🔍 Flake8 (style guide enforcement)
+        run: |
+          flake8 src/ tests/ --count --select=E9,F63,F7,F82 --show-source --statistics
+          flake8 src/ tests/ --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+        continue-on-error: true
+      
+      - name: 📊 MyPy (type checking)
+        run: |
+          mypy src/ --ignore-missing-imports --no-strict-optional
+        continue-on-error: true
+      
+      - name: 🔎 Pylint (code quality)
+        run: |
+          pylint src/ --disable=C0114,C0115,C0116 --fail-under=6.0
+        continue-on-error: true
+
+  # ---------------------------------------------------------------------------
+  # UNIT TESTS
+  # ---------------------------------------------------------------------------
+  test:
+    name: 🧪 Unit Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    
+    services:
+      postgres:
+        image: postgres:${{ env.POSTGRES_VERSION }}
+        env:
+          POSTGRES_DB: project_zzz_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+      
+      - name: 🐍 Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+      
+      - name: 📦 Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest-cov
+      
+      - name: ⚙️ Create test config
+        run: |
+          mkdir -p config
+          cat > config/config.yaml << EOF
+          database:
+            host: localhost
+            port: 5432
+            name: project_zzz_test
+            user: postgres
+            password: postgres
+          ab_test:
+            enabled: false
+          EOF
+      
+      - name: 🧪 Run tests
+        run: |
+          pytest tests/ -v \
+            --cov=src \
+            --cov-report=xml \
+            --cov-report=term-missing \
+            --cov-fail-under=30 \
+            -m "not slow"
+        env:
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_NAME: project_zzz_test
+          DB_USER: postgres
+          DB_PASSWORD: postgres
+      
+      - name: 📊 Upload coverage to Codecov
+        uses: codecov/codecov-action@v3
+        with:
+          file: ./coverage.xml
+          flags: unittests
+          name: codecov-umbrella
+        continue-on-error: true
+
+  # ---------------------------------------------------------------------------
+  # SECURITY SCAN
+  # ---------------------------------------------------------------------------
+  security:
+    name: 🔒 Security Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+      
+      - name: 🐍 Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      
+      - name: 📦 Install safety
+        run: pip install safety bandit
+      
+      - name: 🔒 Safety (dependency vulnerabilities)
+        run: safety check -r requirements.txt
+        continue-on-error: true
+      
+      - name: 🛡️ Bandit (security issues)
+        run: bandit -r src/ -ll
+        continue-on-error: true
+
+  # ---------------------------------------------------------------------------
+  # BUILD DOCKER
+  # ---------------------------------------------------------------------------
+  docker:
+    name: 🐳 Build Docker
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [test]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+      
+      - name: 📦 Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: 🔑 Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: 🏷️ Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=sha
+      
+      - name: 🔨 Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ---------------------------------------------------------------------------
+  # DEPLOY (EXAMPLE)
+  # ---------------------------------------------------------------------------
+  deploy:
+    name: 🚀 Deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: [docker]
+    if: false  # Disabled by default, enable when ready
+    environment: production
+    
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+      
+      - name: 🚀 Deploy to production
+        run: |
+          echo "Deploy step - configure your deployment here"
+        # Example:
+        # - kubectl apply -f k8s/
+        # - docker-compose pull && docker-compose up -d

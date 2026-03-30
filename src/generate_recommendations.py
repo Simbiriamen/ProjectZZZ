@@ -61,8 +61,34 @@ def get_engine(config):
     )
 
 def get_ab_group(client_id: str, config: dict) -> str:
+    """
+    Определяет A/B группу для клиента.
+    
+    🔧 ИСПРАВЛЕНИЕ v7.2: Добавлена валидация входных данных
+    
+    Args:
+        client_id: Идентификатор клиента (непустая строка)
+        config: Конфигурация с настройками A/B теста
+    
+    Returns:
+        'test' или 'control'
+    
+    Raises:
+        ValueError: Если client_id некорректен
+    """
+    # 🔧 ВАЛИДАЦИЯ ВХОДНЫХ ДАННЫХ
+    if not client_id:
+        raise ValueError("client_id не может быть пустым")
+    
+    if not isinstance(client_id, str):
+        raise ValueError(f"client_id должен быть строкой, получено {type(client_id)}")
+    
+    if len(client_id) > 256:
+        raise ValueError(f"client_id слишком длинный (макс. 256 символов)")
+    
     if not config.get('ab_test', {}).get('enabled', False):
         return 'control'
+    
     hash_val = int(hashlib.md5(client_id.encode()).hexdigest(), 16) % 100
     ratio = config['ab_test'].get('test_group_ratio', 0.5)
     return 'test' if hash_val < int(ratio * 100) else 'control'
@@ -567,14 +593,17 @@ def main():
         except Exception as e:
             logger.warning(f"⚠️ Не удалось загрузить имена клиентов: {e}")
 
+        # 🔧 ПАКЕТНАЯ ОБРАБОТКА С GROUPBY (вместо O(n²))
+        # 🔧 ИСПРАВЛЕНИЕ v7.2: groupby вместо фильтрации в цикле
+        logger.info("\n📊 Группировка кандидатов по клиентам...")
+        grouped = df_candidates.groupby('client_id')
+        logger.info(f"   ✅ Сгруппировано {len(grouped)} клиентов")
+
         # 🔧 Пакетное сохранение рекомендаций
         recommendations_batch = []
 
-        for client_idx, client_id in enumerate(clients):
-            client_df = df_candidates[df_candidates['client_id'] == client_id].copy()
-            if client_df.empty:
-                continue
-
+        for client_idx, (client_id, client_df) in enumerate(grouped):
+            # 🔧 groupby возвращает уже отфильтрованный DataFrame
             selected_skus, fallback_reason = select_2plus2plus1(
                 client_df,
                 probability_threshold_new=0.05

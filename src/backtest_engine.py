@@ -56,39 +56,47 @@ def get_engine(config):
     )
 
 def get_active_client_list(engine, months=12):
-    """Получает список активных клиентов (≥3 покупок за период)."""
-    logger.info("\n📋 Получение списка активных клиентов...")
-    query = f"""
-    SELECT DISTINCT client_id
-    FROM purchases
-    WHERE purchase_date >= CURRENT_DATE - INTERVAL '{months} months'
-    GROUP BY client_id
-    HAVING COUNT(*) >= 3
-    ORDER BY client_id
     """
-    df_clients = pd.read_sql(text(query), engine)
+    Получает список активных клиентов (≥3 покупок за период).
+    
+    🔧 ИСПРАВЛЕНИЕ v4.6: Параметризованный запрос (защита от SQL Injection)
+    """
+    logger.info("\n📋 Получение списка активных клиентов...")
+    
+    query = text("""
+        SELECT DISTINCT client_id
+        FROM purchases
+        WHERE purchase_date >= CURRENT_DATE - INTERVAL :months MONTH
+        GROUP BY client_id
+        HAVING COUNT(*) >= 3
+        ORDER BY client_id
+    """)
+    
+    df_clients = pd.read_sql(query, engine, params={'months': months})
     logger.info(f"   ✅ Найдено активных клиентов: {len(df_clients):,}")
     return df_clients['client_id'].tolist()
 
 def load_raw_purchases_chunk(engine, client_ids, months=12):
-    """Загружает данные для пакета клиентов."""
+    """
+    Загружает данные для пакета клиентов.
+    
+    🔧 ИСПРАВЛЕНИЕ v4.6: Параметризованный запрос (защита от SQL Injection)
+    """
     if not client_ids:
         return pd.DataFrame()
-    
-    ids_str = "','".join([str(cid).replace("'", "''") for cid in client_ids])
-    
-    query = f"""
-    SELECT 
-        client_id, 
-        sku_id, 
-        purchase_date
-    FROM purchases
-    WHERE purchase_date >= CURRENT_DATE - INTERVAL '{months} months'
-      AND client_id IN ('{ids_str}')
-    ORDER BY client_id, sku_id, purchase_date
-    """
-    
-    df = pd.read_sql(text(query), engine)
+
+    query = text("""
+        SELECT
+            client_id,
+            sku_id,
+            purchase_date
+        FROM purchases
+        WHERE purchase_date >= CURRENT_DATE - INTERVAL :months MONTH
+          AND client_id = ANY(:client_ids)
+        ORDER BY client_id, sku_id, purchase_date
+    """)
+
+    df = pd.read_sql(query, engine, params={'months': months, 'client_ids': client_ids})
     df['purchase_date'] = pd.to_datetime(df['purchase_date'])
     return df
 
