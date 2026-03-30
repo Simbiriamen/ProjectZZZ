@@ -187,70 +187,72 @@ def main():
     logger.info("🧪 ProjectZZZ - A/B TEST EVALUATOR v1.0")
     logger.info(f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info("="*70)
-    
+
+    engine = None
+
     try:
         config = load_config()
         ab_config = get_ab_config(config)
-        
+
         if not ab_config['enabled']:
             logger.info("ℹ️ A/B тестирование отключено в config.yaml")
             return 0
-        
+
         engine = get_engine(config)
-        
+
         registry_path = PROJECT_ROOT / "models" / "model_registry.json"
         with open(registry_path, 'r', encoding='utf-8') as f:
             registry = json.load(f)
-        
+
         production_model = registry.get('active_model')
-        staging_models = [m['name'] for m in registry['models'] 
+        staging_models = [m['name'] for m in registry['models']
                          if m['status'] == 'staging' and m.get('auto_promote')]
-        
+
         if not production_model:
             logger.error("❌ Нет активной production-модели")
             return 1
-        
+
         if not staging_models:
             logger.info("ℹ️ Нет staging-моделей с auto_promote для тестирования")
             return 0
-        
+
         test_model = staging_models[0]
         logger.info(f"🔍 Сравнение: {production_model} (control) vs {test_model} (test)")
-        
+
         days = ab_config['min_duration_days']
         control_metrics = calculate_metrics(engine, 'control', days)
         test_metrics = calculate_metrics(engine, 'test', days)
-        
+
         logger.info(f"\n📊 Метрики за {days} дней:")
         logger.info(f"   Control ({production_model}):")
         logger.info(f"      • Precision@5: {control_metrics['precision_5']:.3f}")
         logger.info(f"      • Hit Rate: {control_metrics['hit_rate']:.3f}")
         logger.info(f"      • Brier Score: {control_metrics['brier_score']:.3f}")
         logger.info(f"      • Записей: {control_metrics['count']:,}")
-        
+
         logger.info(f"   Test ({test_model}):")
         logger.info(f"      • Precision@5: {test_metrics['precision_5']:.3f}")
         logger.info(f"      • Hit Rate: {test_metrics['hit_rate']:.3f}")
         logger.info(f"      • Brier Score: {test_metrics['brier_score']:.3f}")
         logger.info(f"      • Записей: {test_metrics['count']:,}")
-        
+
         significance = test_significance(
-            control_metrics, test_metrics, 
+            control_metrics, test_metrics,
             ab_config['significance_level']
         )
-        
+
         logger.info(f"\n🔬 Статистическая значимость (α={ab_config['significance_level']}):")
         for metric in ['precision_5', 'hit_rate']:
             sig = significance[f'{metric}_significant']
             pval = significance[f'{metric}_pvalue']
             uplift = significance[f'{metric}_uplift']
             logger.info(f"   • {metric}: {'✅' if sig else '❌'} (p={pval:.3f}, uplift={uplift*100:.1f}%)")
-        
+
         decision = make_decision(ab_config, control_metrics, test_metrics, significance)
-        
+
         logger.info(f"\n🎯 РЕШЕНИЕ: {decision['action'].upper()}")
         logger.info(f"   Причина: {decision['reason']}")
-        
+
         if ab_config['auto_promote'] and decision['action'] != 'continue':
             from models.model_controller import ModelController
             controller = ModelController(
@@ -258,18 +260,22 @@ def main():
                 registry_path=registry_path
             )
             update_registry(controller, decision, test_model, production_model)
-        
+
         logger.info("\n" + "="*70)
         logger.info("✅ A/B EVALUATION COMPLETED")
         logger.info("="*70)
-        
+
         return 0
-        
+
     except Exception as e:
         logger.error(f"❌ Критическая ошибка: {e}")
         import traceback
         traceback.print_exc()
         return 1
+    finally:
+        # 🔧 ИСПРАВЛЕНИЕ v1.1: Освобождение ресурсов
+        if engine:
+            engine.dispose()
 
 
 if __name__ == "__main__":

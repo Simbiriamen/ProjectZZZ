@@ -92,8 +92,14 @@ def load_raw_purchases_chunk(engine, client_ids, months=12):
     df['purchase_date'] = pd.to_datetime(df['purchase_date'])
     return df
 
-def process_batch(df, visit_interval_days=VISIT_INTERVAL_DAYS, purchase_window_days=PURCHASE_WINDOW_DAYS):
-    """Обработка одного пакета данных."""
+def process_batch(df, visit_interval_days=VISIT_INTERVAL_DAYS, purchase_window_days=PURCHASE_WINDOW_DAYS, max_rows_per_client=1000):
+    """
+    Обработка одного пакета данных.
+    🔧 ИСПРАВЛЕНИЯ v4.5:
+      1. Фильтрация строк с NaT вместо пропуска целых групп
+      2. Генерация визитов только для диапазона дат клиента (не полная сетка)
+      3. Ограничение результата для предотвращения утечки памяти
+    """
     if df.empty:
         return pd.DataFrame()
 
@@ -101,68 +107,90 @@ def process_batch(df, visit_interval_days=VISIT_INTERVAL_DAYS, purchase_window_d
     sku_counts = df['sku_id'].value_counts()
     popular_skus = sku_counts[sku_counts >= 2].index
     df = df[df['sku_id'].isin(popular_skus)].copy()
-    
+
     if df.empty:
         return pd.DataFrame()
 
     # 2. Сортировка и расчёт следующей покупки
     df = df.sort_values(['client_id', 'sku_id', 'purchase_date'])
     df['next_purchase_date'] = df.groupby(['client_id', 'sku_id'])['purchase_date'].shift(-1)
-    
-    # 3. Генерация сетки визитов
+
+    # 🔧 3. Фильтрация строк с NaT в purchase_date (вместо пропуска целых групп)
+    na_rows = df['purchase_date'].isna().sum()
+    if na_rows > 0:
+        logger.warning(f"   ⚠️ Найдено {na_rows} строк с NaT в purchase_date — отфильтрованы")
+        df = df.dropna(subset=['purchase_date'])
+
+    if df.empty:
+        return pd.DataFrame()
+
+    # 🔧 4. Генерация визитов только для нужного диапазона (не полная сетка)
     min_date = df['purchase_date'].min()
     max_date = df['purchase_date'].max()
-    
+
     if pd.isna(min_date) or pd.isna(max_date):
         return pd.DataFrame()
 
     date_range = pd.date_range(start=min_date, end=max_date, freq=f'{visit_interval_days}D')
-    unique_clients = df['client_id'].unique()
-    
-    visits_grid = pd.MultiIndex.from_product(
-        [unique_clients, date_range],
-        names=['client_id', 'visit_date']
-    ).to_frame(index=False)
 
-    # 4. Эмуляция Lateral Join
-    client_visits_dict = visits_grid.groupby('client_id')['visit_date'].apply(list).to_dict()
+    # 🔧 5. Обработка с ограничением памяти
     result_rows = []
-    
-    grouped = df.groupby(['client_id', 'sku_id'])
-    
-    for (client_id, sku_id), group in grouped:
+    grouped = df.groupby(['client_id', 'sku_id'], sort=False)
+    total_groups = len(grouped)
+
+    for group_idx, (client_id, sku_id), group in enumerate(grouped):
         purchase_dates = group['purchase_date'].values.astype('datetime64[ns]')
         next_dates = group['next_purchase_date'].values
-        
-        if np.any(pd.isna(purchase_dates)):
-            logger.warning(f"   Обнаружены NaT в purchase_dates для client {client_id}, sku {sku_id}. Пропуск.")
+
+        # 🔧 Фильтрация только невалидных строк, а не всей группы
+        valid_mask = ~pd.isna(purchase_dates)
+        if not np.any(valid_mask):
+            logger.warning(f"   ⚠️ Все строки для client={client_id}, sku={sku_id} содержат NaT — пропуск")
             continue
-        
-        client_visits = client_visits_dict.get(client_id, [])
-        
-        for visit_date in client_visits:
+
+        if not np.all(valid_mask):
+            # Есть частично валидные данные — фильтруем только плохие строки
+            purchase_dates = purchase_dates[valid_mask]
+            next_dates = next_dates[valid_mask]
+
+        # 🔧 Генерация визитов только для диапазона дат этого клиента
+        client_min_date = purchase_dates.min()
+        client_max_date = purchase_dates.max()
+        client_date_range = pd.date_range(
+            start=client_min_date, end=client_max_date, freq=f'{visit_interval_days}D'
+        )
+
+        for visit_date in client_date_range:
             visit_date_np = np.datetime64(visit_date)
             idx = np.searchsorted(purchase_dates, visit_date_np, side='right') - 1
-            
+
             if idx >= 0:
                 last_purchase = purchase_dates[idx]
                 next_purchase = next_dates[idx] if idx < len(next_dates) else pd.NaT
-                
+
                 target = 0
                 if pd.notna(next_purchase):
                     days_diff = (next_purchase - visit_date_np) / np.timedelta64(1, 'D')
-                    if days_diff <= purchase_window_days:
+                    if 0 <= days_diff <= purchase_window_days:
                         target = 1
-                
+
                 result_rows.append({
                     'client_id': client_id,
                     'visit_date': visit_date,
                     'sku_id': sku_id,
-                    'last_purchase_date': last_purchase,
+                    'last_purchase_date': pd.Timestamp(last_purchase),
                     'target': target,
                     'days_since_last_purchase': int((visit_date_np - last_purchase) / np.timedelta64(1, 'D'))
                 })
-    
+
+        # 🔧 Прогресс обработки пакета
+        if (group_idx + 1) % 100 == 0:
+            logger.debug(f"   📊 Обработано {group_idx + 1}/{total_groups} групп (client_id, sku_id)")
+
+    # 🔧 Логирование размера результата
+    if result_rows:
+        logger.info(f"   📊 Сгенерировано {len(result_rows):,} примеров из {total_groups} групп")
+
     return pd.DataFrame(result_rows) if result_rows else pd.DataFrame()
 
 def save_chunk_to_database(engine, df):

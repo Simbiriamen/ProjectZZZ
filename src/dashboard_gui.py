@@ -1,3 +1,11 @@
+# -*- coding: utf-8 -*-
+"""
+dashboard_gui.py v2.1
+🔧 ИСПРАВЛЕНИЯ:
+  1. Обработка таймаута subprocess
+  2. Корректное завершение потоков (thread.join())
+  3. Логирование ошибок
+"""
 import tkinter as tk
 from tkinter import scrolledtext, messagebox
 import subprocess
@@ -7,6 +15,8 @@ import datetime
 
 # Путь к проекту
 PROJECT_PATH = r"D:\ProjectZZZ"
+SCRIPT_TIMEOUT = 3600  # 60 минут
+
 
 class ProjectDashboard:
     def __init__(self, root):
@@ -48,6 +58,9 @@ class ProjectDashboard:
         self.label_status = tk.Label(root, textvariable=self.status_var, bd=1, relief=tk.SUNKEN, anchor=tk.W)
         self.label_status.pack(side=tk.BOTTOM, fill=tk.X)
 
+        # 🔧 Хранение ссылок на потоки
+        self.running_threads = {}
+
         self.log_message("Система запущена. Ожидание команд.")
 
     def log_message(self, message):
@@ -60,30 +73,58 @@ class ProjectDashboard:
         self.text_logs.config(state='disabled')
 
     def run_script(self, command):
-        """Запуск скрипта в отдельном потоке чтобы не зависал интерфейс"""
+        """Запуск скрипта в отдельном потоке с таймаутом"""
         self.status_var.set("Выполнение...")
         self.log_message(f"Запуск: {command}")
-        
+
         def target():
+            process = None
             try:
                 # Запуск команды в папке проекта
-                result = subprocess.run(command, shell=True, cwd=PROJECT_PATH, 
-                                        capture_output=True, text=True, timeout=300)
-                
-                if result.returncode == 0:
-                    self.log_message("Успешно завершено.")
-                    self.status_var.set("Готов к работе")
-                else:
-                    self.log_message(f"Ошибка выполнения: {result.stderr}")
-                    self.status_var.set("Ошибка выполнения скрипта")
-                    messagebox.showerror("Ошибка", f"Скрипт вернул ошибку:\n{result.stderr}")
+                process = subprocess.Popen(
+                    command,
+                    shell=True,
+                    cwd=PROJECT_PATH,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True
+                )
+
+                try:
+                    # 🔧 Ожидание с таймаутом
+                    stdout, stderr = process.communicate(timeout=SCRIPT_TIMEOUT)
+
+                    if process.returncode == 0:
+                        self.log_message("Успешно завершено.")
+                        self.status_var.set("Готов к работе")
+                    else:
+                        self.log_message(f"Ошибка выполнения: {stderr}")
+                        self.status_var.set("Ошибка выполнения скрипта")
+                        self.root.after(0, lambda: messagebox.showerror("Ошибка", f"Скрипт вернул ошибку:\n{stderr}"))
+
+                except subprocess.TimeoutExpired:
+                    # 🔧 Принудительное завершение при таймауте
+                    process.kill()
+                    process.wait()
+                    self.log_message(f"ТАЙМАУТ ({SCRIPT_TIMEOUT} сек) - процесс завершён принудительно")
+                    self.status_var.set("Таймаут выполнения")
+                    self.root.after(0, lambda: messagebox.showerror("Таймаут", f"Скрипт не завершился за {SCRIPT_TIMEOUT} сек"))
+
             except Exception as e:
                 self.log_message(f"Критическая ошибка: {str(e)}")
                 self.status_var.set("Критическая ошибка")
-                messagebox.showerror("Ошибка", str(e))
+                self.root.after(0, lambda: messagebox.showerror("Ошибка", str(e)))
+            
+            finally:
+                # 🔧 Освобождение ресурсов
+                if process and process.poll() is None:
+                    process.kill()
 
-        thread = threading.Thread(target=target)
+        thread = threading.Thread(target=target, daemon=True)
         thread.start()
+        
+        # 🔧 Сохранение ссылки на поток для контроля
+        self.running_threads[command] = thread
 
     def sync_github(self):
         """Синхронизация с GitHub"""
@@ -97,7 +138,25 @@ class ProjectDashboard:
         # Для упрощения просто делаем pull и push
         self.run_script("git pull && git push")
 
+    def wait_all_threads(self, timeout=10):
+        """🔧 Ожидание завершения всех потоков при закрытии"""
+        for cmd, thread in self.running_threads.items():
+            if thread.is_alive():
+                thread.join(timeout=timeout)
+        self.running_threads.clear()
+
+    def on_closing(self):
+        """🔧 Обработчик закрытия окна"""
+        if self.running_threads:
+            if messagebox.askokcancel("Выход", "Есть выполняющиеся процессы. Завершить?"):
+                self.wait_all_threads(timeout=5)
+                self.root.destroy()
+        else:
+            self.root.destroy()
+
+
 if __name__ == "__main__":
     root = tk.Tk()
+    root.protocol("WM_DELETE_WINDOW", ProjectDashboard.on_closing)  # 🔧 Перехват закрытия
     app = ProjectDashboard(root)
     root.mainloop()

@@ -142,127 +142,176 @@ def load_active_model():
 def get_clients_for_today(engine):
     logger.info("\n👥 Получение клиентов на визит...")
     try:
-        query = """
+        query = text("""
         SELECT DISTINCT client_id FROM visits_schedule
         WHERE planned_visit_date = CURRENT_DATE AND status != 'completed'
-        """
-        df = pd.read_sql(text(query), engine)
+        """)
+        df = pd.read_sql(query, engine)
         if not df.empty:
             logger.info(f"   ✅ Найдено клиентов из расписания: {len(df)}")
             return df['client_id'].tolist()
     except Exception:
         pass
-    
+
     logger.info("   🔄 Fallback: берём активных клиентов за 90 дней...")
-    query = """
+    query = text("""
     SELECT DISTINCT client_id FROM purchases
     WHERE purchase_date >= CURRENT_DATE - INTERVAL '90 days'
     ORDER BY client_id
-    """
-    df = pd.read_sql(text(query), engine)
+    """)
+    df = pd.read_sql(query, engine)
     logger.info(f"   ✅ Найдено активных клиентов: {len(df)}")
     return df['client_id'].tolist()
 
 
-def get_candidate_skus_batch(engine, client_ids):
+def get_candidate_skus_batch(engine, client_ids, batch_size=200):
     """
-    🔧 ИСПРАВЛЕНО:
-    Global Top 200: самые продаваемые за последние 90 дней.
+    🔧 ИСПРАВЛЕНО v7.1:
+      1. Параметризованный SQL (защита от SQL injection)
+      2. Пакетная загрузка кандидатов для предотвращения утечки памяти
+      3. Global Top 200: самые продаваемые за последние 90 дней.
     """
-    logger.info(f"\n💾 Загрузка кандидатов для {len(client_ids)} клиентов...")
-    if not client_ids: return pd.DataFrame()
-    
-    client_ids_str = "','".join([str(c).replace("'", "''") for c in client_ids])
-    
-    query = f"""
-    WITH client_history AS (
-        SELECT DISTINCT client_id, sku_id
-        FROM sales_enriched
-        WHERE client_id IN ('{client_ids_str}')
-          AND purchase_date >= CURRENT_DATE - INTERVAL '90 days'
-    ),
-    global_top_skus AS (
-        -- 🔧 ИСПРАВЛЕНИЕ: Топ-200 SKU по продажам за последние 90 дней
-        SELECT 
-            s.sku_id, 
-            se.article,
-            s.brand, s.sku_name, s.marketing_group1 AS marketing_group, 
-            s.category, s.price, s.margin, s.stock, s.is_new, s.applicability,
-            COUNT(*) as sales_cnt
-        FROM sales_enriched se
-        JOIN skus s ON se.sku_id = s.sku_id
-        WHERE s.stock >= 1
-          AND se.purchase_date >= CURRENT_DATE - INTERVAL '90 days'
-        GROUP BY s.sku_id, se.article, s.brand, s.sku_name, s.marketing_group1, s.category, s.price, s.margin, s.stock, s.is_new, s.applicability
-        ORDER BY sales_cnt DESC
-        LIMIT 200
-    ),
-    candidates AS (
-        -- 1. История клиента (is_new_for_client = 0)
-        SELECT 
-            se.client_id, se.sku_id, se.article, s.brand, s.sku_name,
-            s.marketing_group1 AS marketing_group, s.category, s.price, s.margin, s.stock, s.is_new, s.applicability,
-            0 AS is_new_for_client,
-            COALESCE(se.days_since_last_purchase, 999) AS days_since_last_purchase,
-            COALESCE(se.frequency_30d, 0) AS frequency_30d,
-            COALESCE(se.frequency_90d, 0) AS frequency_90d,
-            COALESCE(se.rolling_sales_2w, 0) AS rolling_sales_2w,
-            COALESCE(se.rolling_sales_4w, 0) AS rolling_sales_4w,
-            COALESCE(se.rolling_sales_8w, 0) AS rolling_sales_8w,
-            COALESCE(se.global_popularity, 0) AS global_popularity,
-            COALESCE(se.portfolio_diversity, 1) AS portfolio_diversity,
-            COALESCE(se.group_trend_6m, 0) AS group_trend_6m,
-            COALESCE(se.group_share_in_portfolio, 0) AS group_share_in_portfolio,
-            COALESCE(se.days_since_last_purchase_group, 999) AS days_since_last_purchase_group
-        FROM sales_enriched se
-        JOIN skus s ON se.sku_id = s.sku_id
-        WHERE se.client_id IN ('{client_ids_str}') AND s.stock >= 1
-          AND se.purchase_date = (
-              SELECT MAX(purchase_date) FROM sales_enriched se2 
-              WHERE se2.client_id = se.client_id AND se2.sku_id = se.sku_id
-          )
-        UNION
-        -- 2. Глобальные новинки (is_new_for_client = 1)
-        SELECT 
-            c.client_id, g.sku_id, g.article, g.brand, g.sku_name,
-            g.marketing_group, g.category, g.price, g.margin, g.stock, g.is_new, g.applicability,
-            1 AS is_new_for_client,
-            999 AS days_since_last_purchase, 0 AS frequency_30d, 0 AS frequency_90d,
-            0 AS rolling_sales_2w, 0 AS rolling_sales_4w, 0 AS rolling_sales_8w,
-            0 AS global_popularity, 1 AS portfolio_diversity, 0 AS group_trend_6m,
-            0 AS group_share_in_portfolio, 999 AS days_since_last_purchase_group
-        FROM (SELECT DISTINCT client_id FROM client_history) c
-        CROSS JOIN global_top_skus g
-        LEFT JOIN client_history ch ON c.client_id = ch.client_id AND g.sku_id = ch.sku_id
-        WHERE ch.sku_id IS NULL
-    )
-    SELECT * FROM candidates ORDER BY client_id, sku_id
-    """
-    
-    df = pd.read_sql(text(query), engine)
+    logger.info(f"\n💾 Загрузка кандидатов для {len(client_ids)} клиентов (пакетами по {batch_size})...")
+    if not client_ids:
+        return pd.DataFrame()
+
+    all_dfs = []
+
+    # 🔧 Разбиваем на пакеты для предотвращения перегрузки памяти
+    for i in range(0, len(client_ids), batch_size):
+        batch_clients = client_ids[i:i + batch_size]
+        batch_num = (i // batch_size) + 1
+        total_batches = (len(client_ids) + batch_size - 1) // batch_size
+
+        logger.debug(f"   📦 Пакет {batch_num}/{total_batches} ({len(batch_clients)} клиентов)")
+
+        # 🔧 Параметризованный запрос
+        query = text("""
+        WITH client_history AS (
+            SELECT DISTINCT client_id, sku_id
+            FROM sales_enriched
+            WHERE client_id = ANY(:client_ids)
+              AND purchase_date >= CURRENT_DATE - INTERVAL '90 days'
+        ),
+        global_top_skus AS (
+            -- Топ-200 SKU по продажам за последние 90 дней
+            SELECT
+                s.sku_id,
+                se.article,
+                s.brand, s.sku_name, s.marketing_group1 AS marketing_group,
+                s.category, s.price, s.margin, s.stock, s.is_new, s.applicability,
+                COUNT(*) as sales_cnt
+            FROM sales_enriched se
+            JOIN skus s ON se.sku_id = s.sku_id
+            WHERE s.stock >= 1
+              AND se.purchase_date >= CURRENT_DATE - INTERVAL '90 days'
+            GROUP BY s.sku_id, se.article, s.brand, s.sku_name, s.marketing_group1, s.category,
+                     s.price, s.margin, s.stock, s.is_new, s.applicability
+            ORDER BY sales_cnt DESC
+            LIMIT 200
+        ),
+        candidates AS (
+            -- 1. История клиента (is_new_for_client = 0)
+            SELECT
+                se.client_id, se.sku_id, se.article, s.brand, s.sku_name,
+                s.marketing_group1 AS marketing_group, s.category, s.price, s.margin, s.stock,
+                s.is_new, s.applicability,
+                0 AS is_new_for_client,
+                COALESCE(se.days_since_last_purchase, 999) AS days_since_last_purchase,
+                COALESCE(se.frequency_30d, 0) AS frequency_30d,
+                COALESCE(se.frequency_90d, 0) AS frequency_90d,
+                COALESCE(se.rolling_sales_2w, 0) AS rolling_sales_2w,
+                COALESCE(se.rolling_sales_4w, 0) AS rolling_sales_4w,
+                COALESCE(se.rolling_sales_8w, 0) AS rolling_sales_8w,
+                COALESCE(se.global_popularity, 0) AS global_popularity,
+                COALESCE(se.portfolio_diversity, 1) AS portfolio_diversity,
+                COALESCE(se.group_trend_6m, 0) AS group_trend_6m,
+                COALESCE(se.group_share_in_portfolio, 0) AS group_share_in_portfolio,
+                COALESCE(se.days_since_last_purchase_group, 999) AS days_since_last_purchase_group
+            FROM sales_enriched se
+            JOIN skus s ON se.sku_id = s.sku_id
+            WHERE se.client_id = ANY(:client_ids) AND s.stock >= 1
+              AND se.purchase_date = (
+                  SELECT MAX(purchase_date) FROM sales_enriched se2
+                  WHERE se2.client_id = se.client_id AND se2.sku_id = se.sku_id
+              )
+            UNION
+            -- 2. Глобальные новинки (is_new_for_client = 1)
+            SELECT
+                c.client_id, g.sku_id, g.article, g.brand, g.sku_name,
+                g.marketing_group, g.category, g.price, g.margin, g.stock, g.is_new, g.applicability,
+                1 AS is_new_for_client,
+                999 AS days_since_last_purchase, 0 AS frequency_30d, 0 AS frequency_90d,
+                0 AS rolling_sales_2w, 0 AS rolling_sales_4w, 0 AS rolling_sales_8w,
+                0 AS global_popularity, 1 AS portfolio_diversity, 0 AS group_trend_6m,
+                0 AS group_share_in_portfolio, 999 AS days_since_last_purchase_group
+            FROM (SELECT DISTINCT client_id FROM client_history) c
+            CROSS JOIN global_top_skus g
+            LEFT JOIN client_history ch ON c.client_id = ch.client_id AND g.sku_id = ch.sku_id
+            WHERE ch.sku_id IS NULL
+        )
+        SELECT * FROM candidates ORDER BY client_id, sku_id
+        """)
+
+        df_batch = pd.read_sql(query, engine, params={'client_ids': batch_clients})
+        all_dfs.append(df_batch)
+
+    df = pd.concat(all_dfs, ignore_index=True) if all_dfs else pd.DataFrame()
     logger.info(f"   ✅ Загружено кандидатов: {len(df):,}")
-    
+
     # Диагностика: сколько новых?
     new_count = df[df['is_new_for_client'] == 1].shape[0]
     logger.info(f"   📊 Из них 'Новых' (is_new=1): {new_count:,}")
-    
+
     return df
 
 
 def encode_features(df, encoders, feature_cols):
+    """
+    🔧 ИСПРАВЛЕНО v7.1:
+      1. Логирование количества замен NULL значений
+      2. Обработка ошибок кодирования
+    """
     df_encoded = df.copy()
-    if encoders is None: return df_encoded
-    
+    if encoders is None:
+        return df_encoded
+
+    total_nulls_replaced = 0
+
     for col, encoder in encoders.items():
         encoded_col = f'{col}_encoded'
-        if encoded_col in feature_cols:
-            df_encoded[col] = df_encoded[col].fillna('Unknown')
-            try:
-                df_encoded[encoded_col] = df_encoded[col].apply(
-                    lambda x: encoder.transform([x])[0] if x in encoder.classes_ else -1
-                )
-            except Exception:
-                pass
+        if encoded_col not in feature_cols:
+            continue
+
+        if col not in df_encoded.columns:
+            logger.warning(f"   ⚠️ Колонка {col} не найдена — пропускаем")
+            continue
+
+        # 🔧 Подсчёт NULL до замены
+        null_count = df_encoded[col].isna().sum()
+        if null_count > 0:
+            logger.debug(f"   📊 {col}: заменено {null_count} NULL на 'Unknown'")
+            total_nulls_replaced += null_count
+
+        df_encoded[col] = df_encoded[col].fillna('Unknown')
+
+        try:
+            # 🔧 Безопасное кодирование с обработкой неизвестных значений
+            def safe_encode(x):
+                if x in encoder.classes_:
+                    return encoder.transform([x])[0]
+                else:
+                    return -1  # Неизвестные значения
+
+            df_encoded[encoded_col] = df_encoded[col].apply(safe_encode)
+
+        except Exception as e:
+            logger.error(f"   ❌ Ошибка кодирования {col}: {e}")
+            df_encoded[encoded_col] = -1
+
+    if total_nulls_replaced > 0:
+        logger.info(f"   📊 Всего заменено NULL значений: {total_nulls_replaced}")
+
     return df_encoded
 
 
@@ -458,76 +507,91 @@ def export_to_excel_flat(visit_date, recommendations_flat, summary_stats):
 # ==============================================================================
 def main():
     logger.info("="*70)
-    logger.info("🎯 ProjectZZZ - ГЕНЕРАЦИЯ РЕКОМЕНДАЦИЙ v7.0")
+    logger.info("🎯 ProjectZZZ - ГЕНЕРАЦИЯ РЕКОМЕНДАЦИЙ v7.1")
     logger.info(f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info("="*70)
-    
+
     start_time = time.time()
     engine = None
-    
+
+    # 🔧 КОНСТАНТЫ ПАКЕТНОЙ ОБРАБОТКИ
+    CLIENT_BATCH_SIZE = 100  # Обработка клиентов пакетами для экономии памяти
+    SAVE_BATCH_SIZE = 500    # Сохранение в БД каждые N клиентов
+
     try:
         config = load_config()
         engine = get_engine(config)
         logger.info(f"✅ Подключение к БД: {config['database']['name']}")
-        
+
         model, calibrator, encoders, feature_cols, best_iteration = load_active_model()
-        if model is None: return 1
-        
+        if model is None:
+            return 1
+
         visit_date = datetime.now().date()
         clients = get_clients_for_today(engine)
-        
+
         if not clients:
             logger.warning("⚠️ Нет клиентов")
             return 0
-        
-        df_candidates = get_candidate_skus_batch(engine, clients)
+
+        # 🔧 Пакетная загрузка кандидатов
+        df_candidates = get_candidate_skus_batch(engine, clients, batch_size=CLIENT_BATCH_SIZE)
         if df_candidates.empty:
             logger.error("❌ Нет кандидатов")
             return 1
-        
+
         logger.info("\n🔮 Предсказание...")
         df_encoded = encode_features(df_candidates, encoders, feature_cols)
         probabilities = predict_probabilities_batch(model, df_encoded, feature_cols, calibrator, best_iteration)
         df_candidates['predicted_prob'] = probabilities
-        
+
         logger.info("\n📋 Правило 2+2+1...")
-        
-        all_recommendations = []
-        # Счетчики для статистики
-        clients_critical_fallback = 0 # Только те, кто потерял "Новые"
+
+        # 🔧 Пакетная обработка с промежуточным сохранением
+        clients_critical_fallback = 0
         selection_counts = {}
-        
-        # Загрузка имен клиентов
+        total_processed = 0
+
+        # 🔧 Загрузка имен клиентов (параметризованный запрос)
         client_names = {}
         try:
-            ids_str = "','".join([str(c).replace("'", "''") for c in clients])
-            q = f"SELECT client_id, client_name FROM clients WHERE client_id IN ('{ids_str}')"
-            res = pd.read_sql(text(q), engine)
-            client_names = dict(zip(res['client_id'], res['client_name']))
-        except: pass
-        
-        for client_id in clients:
+            query = text("""
+                SELECT client_id, client_name FROM clients
+                WHERE client_id = ANY(:client_ids)
+            """)
+            # Загружаем именами пакетами
+            for i in range(0, len(clients), CLIENT_BATCH_SIZE):
+                batch = clients[i:i + CLIENT_BATCH_SIZE]
+                res = pd.read_sql(query, engine, params={'client_ids': batch})
+                client_names.update(dict(zip(res['client_id'], res['client_name'])))
+        except Exception as e:
+            logger.warning(f"⚠️ Не удалось загрузить имена клиентов: {e}")
+
+        # 🔧 Пакетное сохранение рекомендаций
+        recommendations_batch = []
+
+        for client_idx, client_id in enumerate(clients):
             client_df = df_candidates[df_candidates['client_id'] == client_id].copy()
-            if client_df.empty: continue
-            
+            if client_df.empty:
+                continue
+
             selected_skus, fallback_reason = select_2plus2plus1(
-                client_df, 
+                client_df,
                 probability_threshold_new=0.05
             )
-            
-            # 🔧 ИСПРАВЛЕННАЯ ЛОГИКА УЧЕТА FALLBACK
-            # Считаем "критическим" только если нет новых товаров вообще
+
+            # Учёт fallback
             if fallback_reason and "No_new_candidates_at_all" in fallback_reason:
                 clients_critical_fallback += 1
-            
-            # Статистика по типам
+
+            # Статистика
             for sku in selected_skus:
                 t = sku['selection_type']
                 selection_counts[t] = selection_counts.get(t, 0) + 1
-            
+
             client_name = client_names.get(client_id, client_id)
             ab_group = get_ab_group(client_id, config)
-            
+
             for sku in selected_skus:
                 rec = {
                     'visit_date': str(visit_date),
@@ -543,41 +607,65 @@ def main():
                     'model_version': 'model_lightgbm_v1',
                     'ab_group': ab_group
                 }
-                all_recommendations.append(rec)
-        
-        if all_recommendations:
-            logger.info("\n💾 Сохранение...")
-            save_to_database(engine, visit_date, all_recommendations)
-            
+                recommendations_batch.append(rec)
+
+            total_processed += 1
+
+            # 🔧 Промежуточное сохранение каждые SAVE_BATCH_SIZE клиентов
+            if len(recommendations_batch) >= SAVE_BATCH_SIZE * 5:  # ~5 рекомендаций на клиента
+                logger.debug(f"   💾 Промежуточное сохранение ({len(recommendations_batch)} записей)...")
+                save_to_database(engine, visit_date, recommendations_batch)
+                recommendations_batch = []
+
+            # Прогресс
+            if (client_idx + 1) % 100 == 0:
+                logger.debug(f"   📊 Обработано клиентов: {client_idx + 1}/{len(clients)}")
+
+        # 🔧 Сохранение остатка
+        if recommendations_batch:
+            logger.debug(f"   💾 Финальное сохранение ({len(recommendations_batch)} записей)...")
+            save_to_database(engine, visit_date, recommendations_batch)
+
+        # Статистика
+        all_recommendations_count = sum(selection_counts.values())
+
+        if all_recommendations_count > 0:
+            logger.info("\n💾 Сохранение завершено")
+
             summary_stats = {
                 'total_clients': len(clients),
-                'total_recommendations': len(all_recommendations),
-                'fallback_rate': (clients_critical_fallback / len(clients) * 100), # Новый расчет
+                'total_recommendations': all_recommendations_count,
+                'fallback_rate': (clients_critical_fallback / len(clients) * 100) if clients else 0,
                 'model_version': 'model_lightgbm_v1',
             }
-            export_to_excel_flat(visit_date, all_recommendations, summary_stats)
-            
+            export_to_excel_flat(visit_date, recommendations_batch, summary_stats)
+
             # Вывод статистики
             logger.info(f"\n📊 Статистика типов рекомендаций:")
             for t, cnt in sorted(selection_counts.items(), key=lambda x: x[1], reverse=True):
-                logger.info(f"   • {t}: {cnt} ({cnt/len(all_recommendations)*100:.1f}%)")
-            
-            logger.info(f"\n⚠️ Critical Fallback (нет Новых): {clients_critical_fallback}/{len(clients)} ({clients_critical_fallback/len(clients):.1%})")
+                pct = cnt / all_recommendations_count * 100 if all_recommendations_count else 0
+                logger.info(f"   • {t}: {cnt} ({pct:.1f}%)")
+
+            fallback_pct = clients_critical_fallback / len(clients) * 100 if clients else 0
+            logger.info(f"\n⚠️ Critical Fallback (нет Новых): {clients_critical_fallback}/{len(clients)} ({fallback_pct:.1f}%)")
         else:
             logger.error("❌ Нет рекомендаций")
             return 1
-        
+
         elapsed = time.time() - start_time
         logger.info(f"\n🎉 Завершено! Время: {elapsed:.1f} сек")
+        logger.info(f"   📊 Обработано клиентов: {total_processed}")
+        logger.info(f"   📊 Всего рекомендаций: {all_recommendations_count}")
         return 0
-        
+
     except Exception as e:
         logger.error(f"❌ Критическая ошибка: {e}")
         import traceback
         traceback.print_exc()
         return 1
     finally:
-        if engine: engine.dispose()
+        if engine:
+            engine.dispose()
 
 if __name__ == "__main__":
     sys.exit(main())

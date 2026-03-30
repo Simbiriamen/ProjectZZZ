@@ -152,7 +152,15 @@ class ReferenceLoader:
         """Загрузка клиентов (Справочник КА*)"""
         logger.info(f"\n👥 ЗАГРУЗКА КЛИЕНТОВ: {file_path.name}")
         try:
-            df = pd.read_excel(file_path, sheet_name="TDSheet", skiprows=4, dtype=str)
+            # 🔧 ИСПРАВЛЕНИЕ v3.5: Контекстный менеджер для Excel
+            with pd.ExcelFile(file_path, engine='openpyxl') as xl:
+                df = pd.read_excel(
+                    xl,
+                    sheet_name="TDSheet",
+                    skiprows=4,
+                    dtype=str
+                )
+            
             df = df.loc[:, df.columns.notna() & (df.columns != '')]
             df = df.loc[:, ~df.columns.str.startswith('Unnamed', na=False)]
             
@@ -208,7 +216,15 @@ class ReferenceLoader:
         """Загрузка товаров (Справочник номенклатуры*)"""
         logger.info(f"\n📦 ЗАГРУЗКА ТОВАРОВ: {file_path.name}")
         try:
-            df = pd.read_excel(file_path, sheet_name="TDSheet", skiprows=6, dtype=str)
+            # 🔧 ИСПРАВЛЕНИЕ v3.5: Контекстный менеджер для Excel
+            with pd.ExcelFile(file_path, engine='openpyxl') as xl:
+                df = pd.read_excel(
+                    xl,
+                    sheet_name="TDSheet",
+                    skiprows=6,
+                    dtype=str
+                )
+            
             df = df.loc[:, df.columns.notna() & (df.columns != '')]
             df = df.loc[:, ~df.columns.str.startswith('Unnamed', na=False)]
             
@@ -267,16 +283,16 @@ class ReferenceLoader:
     def load_minmax(self, file_path):
         """Загрузка мин-макс норм (Мин-макс*)"""
         logger.info(f"\n📊 ЗАГРУЗКА МИН-МАКС: {file_path.name}")
-        
+
         selected_columns = [
             'Код НСИ', 'Бренд', 'Артикул', 'Номенклатура',
             'Код склада получателя', 'Макс получателя',
             'Маркетинговая группа', 'Кол сделок за посл 180 дней',
             'Продано за последние 180 дней шт',
-            'Парная номенклатура', 'Комплект', 'Набор замен', 
+            'Парная номенклатура', 'Комплект', 'Набор замен',
             'Код набора замен', 'Набор аналогов', 'Код набора аналогов'
         ]
-        
+
         column_mapping = {
             'Код НСИ': 'sku_id',
             'Бренд': 'brand',
@@ -294,9 +310,12 @@ class ReferenceLoader:
             'Набор аналогов': 'analog_set',
             'Код набора аналогов': 'analog_set_code'
         }
-        
+
         try:
-            df_full = pd.read_excel(file_path, sheet_name="TDSheet", header=0, dtype=str)
+            # 🔧 ИСПРАВЛЕНИЕ v3.5: Контекстный менеджер для Excel
+            with pd.ExcelFile(file_path, engine='openpyxl') as xl:
+                df_full = pd.read_excel(xl, sheet_name="TDSheet", header=0, dtype=str)
+            
             logger.info(f"   📊 Всего: {len(df_full):,} строк, {len(df_full.columns)} колонок")
             
             available_cols = [c for c in selected_columns if c in df_full.columns]

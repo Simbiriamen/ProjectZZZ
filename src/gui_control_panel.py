@@ -408,7 +408,11 @@ class ProjectZZZControlPanel:
         thread.start()
     
     def _execute_script(self, cmd, btn, script_name):
-        """Выполняет скрипт в отдельном потоке"""
+        """Выполняет скрипт в отдельном потоке с таймаутом"""
+        # 🔧 ИСПРАВЛЕНИЕ v2.1: Таймаут и принудительное завершение
+        SCRIPT_TIMEOUT = 3600  # 60 минут для длительных операций
+        process = None
+        
         try:
             process = subprocess.Popen(
                 cmd,
@@ -418,24 +422,38 @@ class ProjectZZZControlPanel:
                 encoding='utf-8',
                 errors='replace'
             )
-            
-            for line in process.stdout:
-                self.root.after(0, self._log_line, line.strip())
-            
-            process.wait()
-            
+
+            try:
+                # Чтение вывода с таймаутом
+                for line in process.stdout:
+                    self.root.after(0, self._log_line, line.strip())
+                
+                # Ожидание завершения с таймаутом
+                process.wait(timeout=SCRIPT_TIMEOUT)
+                
+            except subprocess.TimeoutExpired:
+                # 🔧 Принудительное завершение при таймауте
+                self.log(f"\n⚠️ ТАЙМАУТ ({SCRIPT_TIMEOUT} сек) - принудительное завершение...\n", "WARNING")
+                process.kill()
+                process.wait()
+                self.root.after(0, lambda: self.log(f"Процесс завершён принудительно\n", "ERROR"))
+                self.root.after(0, lambda: self.status_bar.config(text="Таймаут выполнения"))
+
             if process.returncode == 0:
                 self.root.after(0, lambda: self.log(f"\nСкрипт завершён успешно!\n", "SUCCESS"))
                 self.root.after(0, lambda: self.status_bar.config(text="Готов к работе"))
-            else:
+            elif process.returncode is not None:
                 self.root.after(0, lambda: self.log(f"\nОшибка выполнения (код {process.returncode})\n", "ERROR"))
                 self.root.after(0, lambda: self.status_bar.config(text="Ошибка выполнения"))
-            
+
         except Exception as e:
             self.root.after(0, lambda: self.log(f"Исключение: {e}", "ERROR"))
             self.root.after(0, lambda: self.status_bar.config(text="Исключение"))
         
         finally:
+            # 🔧 Освобождение ресурсов
+            if process and process.poll() is None:
+                process.kill()
             self.running_scripts[script_name] = False
             if btn:
                 self.root.after(0, lambda: btn.config(state='normal'))
