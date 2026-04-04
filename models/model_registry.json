@@ -158,6 +158,102 @@
       },
       "activated_date": "2026-03-30",
       "auto_promote": true
+    },
+    {
+      "name": "test_staging",
+      "status": "staging",
+      "metrics": {
+        "precision_5": 0.4,
+        "hit_rate": 0.6,
+        "brier_score": 0.15,
+        "training_time_hours": 2.0
+      },
+      "activated_date": null,
+      "auto_promote": true
+    },
+    {
+      "name": "test_production",
+      "status": "production",
+      "metrics": {
+        "precision_5": 0.388,
+        "hit_rate": 0.58,
+        "brier_score": 0.16,
+        "training_time_hours": 2.0
+      },
+      "activated_date": "2026-04-04",
+      "auto_promote": true
+    },
+    {
+      "name": "test_staging_bad",
+      "status": "staging",
+      "metrics": {
+        "precision_5": 0.35,
+        "hit_rate": 0.5,
+        "brier_score": 0.2,
+        "training_time_hours": 2.0
+      },
+      "activated_date": null,
+      "auto_promote": true
+    },
+    {
+      "name": "test_production_good",
+      "status": "production",
+      "metrics": {
+        "precision_5": 0.4,
+        "hit_rate": 0.6,
+        "brier_score": 0.15,
+        "training_time_hours": 2.0
+      },
+      "activated_date": "2026-04-04",
+      "auto_promote": true
+    },
+    {
+      "name": "test_staging",
+      "status": "staging",
+      "metrics": {
+        "precision_5": 0.4,
+        "hit_rate": 0.6,
+        "brier_score": 0.15,
+        "training_time_hours": 2.0
+      },
+      "activated_date": null,
+      "auto_promote": true
+    },
+    {
+      "name": "test_production",
+      "status": "production",
+      "metrics": {
+        "precision_5": 0.388,
+        "hit_rate": 0.58,
+        "brier_score": 0.16,
+        "training_time_hours": 2.0
+      },
+      "activated_date": "2026-04-04",
+      "auto_promote": true
+    },
+    {
+      "name": "test_staging_bad",
+      "status": "staging",
+      "metrics": {
+        "precision_5": 0.35,
+        "hit_rate": 0.5,
+        "brier_score": 0.2,
+        "training_time_hours": 2.0
+      },
+      "activated_date": null,
+      "auto_promote": true
+    },
+    {
+      "name": "test_production_good",
+      "status": "production",
+      "metrics": {
+        "precision_5": 0.4,
+        "hit_rate": 0.6,
+        "brier_score": 0.15,
+        "training_time_hours": 2.0
+      },
+      "activated_date": "2026-04-04",
+      "auto_promote": true
     }
   ],
   "backtest": {
