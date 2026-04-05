@@ -23,6 +23,7 @@
 - [Производительность](#-производительность)
 - [Вклад в проект](#-вклад-в-проект)
 - [Лицензия](#-лицензия)
+- [Документация](#-документация)
 
 ---
 
@@ -466,10 +467,28 @@ D:\ProjectZZZ/
 
 ---
 
+## 📚 Документация
+
+Полная документация проекта расположена в папке [`/docs/`](docs/):
+
+| Документ | Описание |
+|----------|----------|
+| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Подробное описание архитектуры системы, компонентов и потоков данных |
+| [API.md](docs/API.md) | API документация с примерами использования всех модулей |
+| [DEVELOPMENT.md](docs/DEVELOPMENT.md) | Руководство разработчика: настройка окружения, стиль кода, тестирование |
+
+### Быстрые ссылки
+
+- 🏗 [Архитектура](docs/ARCHITECTURE.md) — компоненты, поток данных, развёртывание
+- 🔌 [API](docs/API.md) — Recommendation API, Model Management, Data Access
+- 👨‍💻 [Разработка](docs/DEVELOPMENT.md) — настройка, стиль кода, добавление функций
+
+---
+
 ## 📞 Контакты
 
-- **Project Page**: [GitHub](https://github.com/yourusername/projectzzz)
-- **Issues**: [GitHub Issues](https://github.com/yourusername/projectzzz/issues)
+- **Project Page**: [GitHub](https://github.com/Simbiriamen/ProjectZZZ)
+- **Issues**: [GitHub Issues](https://github.com/Simbiriamen/ProjectZZZ/issues)
 
 ---
 
