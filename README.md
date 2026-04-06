@@ -23,6 +23,7 @@
 - [Производительность](#-производительность)
 - [Вклад в проект](#-вклад-в-проект)
 - [Лицензия](#-лицензия)
+- [Документация](#-документация)
 
 ---
 
@@ -466,10 +467,32 @@ D:\ProjectZZZ/
 
 ---
 
+## 📚 Документация
+
+Полная документация проекта расположена в папке [`/docs/`](docs/):
+
+| Документ | Описание |
+|----------|----------|
+| **[📋 AUDIT_REPORT.md](docs/AUDIT_REPORT.md)** | 🔍 Полный аудит кодовой базы: нарушения SOLID, дублирование, проблемы архитектуры |
+| **[📝 REFACTORING_PLAN.md](docs/REFACTORING_PLAN.md)** | 📅 Детальный план рефакторинга на 6 недель с чеклистами и метриками |
+| **[🏗️ ARCHITECTURE.md](docs/ARCHITECTURE.md)** | Подробное описание архитектуры системы, компонентов и потоков данных |
+| **[🔌 API.md](docs/API.md)** | API документация с примерами использования всех модулей |
+| **[🛠️ DEVELOPMENT.md](docs/DEVELOPMENT.md)** | Руководство разработчика: настройка окружения, стиль кода, тестирование |
+
+### Быстрые ссылки
+
+- 🔍 [Аудит кода](docs/AUDIT_REPORT.md) — анализ проблем, нарушения SOLID, узкие места
+- 📋 [План рефакторинга](docs/REFACTORING_PLAN.md) — пошаговый план улучшений на 6 недель
+- 🏗 [Архитектура](docs/ARCHITECTURE.md) — компоненты, поток данных, развёртывание
+- 🔌 [API](docs/API.md) — Recommendation API, Model Management, Data Access
+- 👨‍💻 [Разработка](docs/DEVELOPMENT.md) — настройка, стиль кода, добавление функций
+
+---
+
 ## 📞 Контакты
 
-- **Project Page**: [GitHub](https://github.com/yourusername/projectzzz)
-- **Issues**: [GitHub Issues](https://github.com/yourusername/projectzzz/issues)
+- **Project Page**: [GitHub](https://github.com/Simbiriamen/ProjectZZZ)
+- **Issues**: [GitHub Issues](https://github.com/Simbiriamen/ProjectZZZ/issues)
 
 ---
 
@@ -479,3 +502,28 @@ D:\ProjectZZZ/
 - [pandas](https://pandas.pydata.org/) — обработка данных
 - [PostgreSQL](https://www.postgresql.org/) — база данных
 - [pytest](https://docs.pytest.org/) — тестирование
+
+---
+
+## 🔧 Рефакторинг (в процессе)
+
+### Текущий статус: Этап 1 завершён ✅
+
+Проводится полный рефакторинг проекта с переходом на Clean Architecture:
+
+**Выполнено:**
+- ✅ Новая структура папок (domain/application/infrastructure/interfaces)
+- ✅ Типизированная конфигурация на pydantic-settings
+- ✅ DI контейнер на dependency-injector
+- ✅ 15 unit-тестов для модуля конфигурации (100% покрытие)
+- ✅ Исправлен pytest.ini
+
+**Документация по рефакторингу:**
+- 📊 [Отчёт о прогрессе](docs/REFACTORING_PROGRESS.md)
+- 📋 [План рефакторинга](docs/REFACTORING_PLAN.md)
+- 🔍 [Аудит кода](docs/AUDIT_REPORT.md)
+
+**Следующие шаги:**
+1. Реализация протоколов репозиториев (P0)
+2. Миграция database.py в новую структуру (P0)
+3. Обновление generate_recommendations.py для использования DI (P1)
