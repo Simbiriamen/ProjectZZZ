@@ -502,3 +502,28 @@ D:\ProjectZZZ/
 - [pandas](https://pandas.pydata.org/) — обработка данных
 - [PostgreSQL](https://www.postgresql.org/) — база данных
 - [pytest](https://docs.pytest.org/) — тестирование
+
+---
+
+## 🔧 Рефакторинг (в процессе)
+
+### Текущий статус: Этап 1 завершён ✅
+
+Проводится полный рефакторинг проекта с переходом на Clean Architecture:
+
+**Выполнено:**
+- ✅ Новая структура папок (domain/application/infrastructure/interfaces)
+- ✅ Типизированная конфигурация на pydantic-settings
+- ✅ DI контейнер на dependency-injector
+- ✅ 15 unit-тестов для модуля конфигурации (100% покрытие)
+- ✅ Исправлен pytest.ini
+
+**Документация по рефакторингу:**
+- 📊 [Отчёт о прогрессе](docs/REFACTORING_PROGRESS.md)
+- 📋 [План рефакторинга](docs/REFACTORING_PLAN.md)
+- 🔍 [Аудит кода](docs/AUDIT_REPORT.md)
+
+**Следующие шаги:**
+1. Реализация протоколов репозиториев (P0)
+2. Миграция database.py в новую структуру (P0)
+3. Обновление generate_recommendations.py для использования DI (P1)
